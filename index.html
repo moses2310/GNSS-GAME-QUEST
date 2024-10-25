@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GNSS Treasure Hunt</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" rel="stylesheet"/>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            font-family: Arial, sans-serif;
+        }
+        #map { 
+            height: 100vh; 
+            width: 100%; 
+        }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 400px;
+            width: calc(100% - 40px);
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        .score-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        .locate-button {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: white;
+            border: none;
+            padding: 10px;
+            border-radius: 50%;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            cursor: pointer;
+        }
+        .stats-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        .gnss-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .gnss-active { background: #4CAF50; }
+        .gnss-inactive { background: #f44336; }
+        .button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .button:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel" id="infoPanel">
+        <h2 style="margin-top: 0;">GNSS Treasure Hunt</h2>
+        <p>Location Status: <span id="locationStatus">Waiting...</span></p>
+        <p>Accuracy: <span id="accuracy">Unknown</span></p>
+        <p>Treasures Found: <span id="treasuresFound">0</span>/5</p>
+        <button class="button" onclick="hideInfo()">Got it!</button>
+    </div>
+    <div class="score-panel">
+        <h3 style="margin: 0;">Score: <span id="score">0</span></h3>
+    </div>
+    <button class="locate-button" onclick="centerOnUser()">📍</button>
+    <div class="stats-panel">
+        <div>
+            <span class="gnss-indicator" id="gnssIndicator"></span>
+            <span id="gnssStatus">Checking GNSS...</span>
+        </div>
+        <div>Distance to nearest POI: <span id="nearestPoi">calculating...</span></div>
+        <div>In safe zone: <span id="safeZone">checking...</span></div>
+    </div>
+
+    <script>
+        let map, userMarker, accuracyCircle, treasures = [], score = 0;
+        const TREASURE_RADIUS = 20; // meters
+        const TREASURE_COUNT = 5;
+        let treasuresFound = 0;
+        let safeZones = [];
+        let pointsOfInterest = [];
+        
+        // Initialize map with Melbourne center
+        function initializeMap() {
+            map = L.map('map').setView([-37.8136, 144.9631], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+            
+            // Initialize geospatial data after map is ready
+            loadGeospatialData();
+        }
+
+        // Custom treasure icon
+        const treasureIcon = L.icon({
+            iconUrl: '/api/placeholder/32/32',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+            popupAnchor: [0, -16]
+        });
+
+        // Load geospatial datasets
+        function loadGeospatialData() {
+            try {
+                // Define safe zones (Melbourne landmarks)
+                safeZones = [
+                    {center: [-37.8136, 144.9631], radius: 1000}, // Melbourne CBD
+                    {center: [-37.8150, 144.9666], radius: 800}   // Federation Square
+                ];
+
+                // Define points of interest
+                pointsOfInterest = [
+                    {name: "Flinders St Station", location: [-37.8183, 144.9671]},
+                    {name: "State Library", location: [-37.8098, 144.9652]},
+                    {name: "MCG", location: [-37.8200, 144.9834]}
+                ];
+
+                // Add safe zones to map
+                safeZones.forEach(zone => {
+                    L.circle(zone.center, {
+                        radius: zone.radius,
+                        color: '#2196F3',
+                        fillColor: '#2196F3',
+                        fillOpacity: 0.1
+                    }).addTo(map);
+                });
+
+                // Add POIs to map
+                pointsOfInterest.forEach(poi => {
+                    L.marker(poi.location)
+                        .bindPopup(poi.name)
+                        .addTo(map);
+                });
+            } catch (error) {
+                console.error('Failed to load geospatial data:', error);
+            }
+        }
+
+        function hideInfo() {
+            const infoPanel = document.getElementById('infoPanel');
+            if (infoPanel) {
+                infoPanel.style.display = 'none';
+            }
+        }
+
+        function centerOnUser() {
+            if (userMarker) {
+                map.setView(userMarker.getLatLng(), 17);
+            }
+        }
+
+        function updateScore(points) {
+            score += points;
+            const scoreElement = document.getElementById('score');
+            if (scoreElement) {
+                scoreElement.textContent = score;
+            }
+        }
+
+        function updateTreasuresFound() {
+            treasuresFound++;
+            const foundElement = document.getElementById('treasuresFound');
+            if (foundElement) {
+                foundElement.textContent = treasuresFound;
+            }
+            
+            if (treasuresFound === TREASURE_COUNT) {
+                alert('Congratulations! You found all treasures! Final score: ' + score);
+            }
+        }
+
+        function createTreasures(position) {
+            // Clear existing treasures
+            treasures.forEach(t => {
+                if (t.marker) {
+                    map.removeLayer(t.marker);
+                }
+            });
+            treasures = [];
+            treasuresFound = 0;
+
+            // Create new treasures with better distribution
+            const radius = 0.005; // roughly 500 meters
+            for(let i = 0; i < TREASURE_COUNT; i++) {
+                const angle = (i / TREASURE_COUNT) * 2 * Math.PI;
+                const distance = radius * Math.sqrt(Math.random());
+                
+                const lat = position.lat + distance * Math.cos(angle);
+                const lng = position.lng + distance * Math.sin(angle);
+                
+                try {
+                    const marker = L.marker([lat, lng], {icon: treasureIcon}).addTo(map);
+                    marker.bindPopup('Treasure #' + (i + 1));
+                    
+                    treasures.push({
+                        marker: marker,
+                        collected: false,
+                        position: {lat, lng}
+                    });
+                } catch (error) {
+                    console.error('Failed to create treasure marker:', error);
+                }
+            }
+        }
+
+        function isInSafeZone(position) {
+            return safeZones.some(zone => {
+                const distance = map.distance(
+                    [position.lat, position.lng],
+                    zone.center
+                );
+                return distance <= zone.radius;
+            });
+        }
+
+        function findNearestPOI(position) {
+            let nearest = Infinity;
+            let nearestName = '';
+            
+            pointsOfInterest.forEach(poi => {
+                const distance = map.distance(
+                    [position.lat, position.lng],
+                    poi.location
+                );
+                if (distance < nearest) {
+                    nearest = distance;
+                    nearestName = poi.name;
+                }
+            });
+            
+            return {
+                distance: Math.round(nearest),
+                name: nearestName
+            };
+        }
+
+        function checkTreasureProximity(position) {
+            treasures.forEach(treasure => {
+                if (!treasure.collected && treasure.marker) {
+                    const distance = map.distance(
+                        [position.lat, position.lng],
+                        [treasure.position.lat, treasure.position.lng]
+                    );
+                    
+                    if (distance < TREASURE_RADIUS) {
+                        treasure.collected = true;
+                        treasure.marker.setOpacity(0.5);
+                        treasure.marker.setPopupContent('Collected!');
+                        updateScore(100);
+                        updateTreasuresFound();
+                    }
+                }
+            });
+        }
+
+        function detectGNSSUsage(position) {
+            const isHighAccuracy = position.coords.accuracy <= 100;
+            const hasAltitude = position.coords.altitude !== null;
+            const hasSpeed = position.coords.speed !== null;
+            
+            const likelyGNSS = isHighAccuracy && (hasAltitude || hasSpeed);
+            
+            const indicator = document.getElementById('gnssIndicator');
+            const status = document.getElementById('gnssStatus');
+            
+            if (indicator && status) {
+                indicator.className = `gnss-indicator ${likelyGNSS ? 'gnss-active' : 'gnss-inactive'}`;
+                status.textContent = likelyGNSS ? 'GNSS Active' : 'Using Network Location';
+            }
+            
+            return likelyGNSS;
+        }
+
+        function updateLocation(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+
+            const locationStatus = document.getElementById('locationStatus');
+            const accuracyElement = document.getElementById('accuracy');
+
+            if (locationStatus && accuracyElement) {
+                const isHighAccuracy = accuracy <= 100;
+                locationStatus.textContent = isHighAccuracy ? 'Using GPS' : 'Low Accuracy';
+                locationStatus.className = isHighAccuracy ? 'good-status' : 'error-status';
+                accuracyElement.textContent = `±${Math.round(accuracy)} meters`;
+            }
+
+            try {
+                // Update or create user marker
+                if (userMarker) {
+                    userMarker.setLatLng([lat, lng]);
+                } else {
+                    userMarker = L.marker([lat, lng], {
+                        zIndexOffset: 1000
+                    }).addTo(map);
+                    map.setView([lat, lng], 17);
+                    createTreasures({lat, lng});
+                }
+
+                // Update or create accuracy circle
+                if (accuracyCircle) {
+                    accuracyCircle.setLatLng([lat, lng]);
+                    accuracyCircle.setRadius(accuracy);
+                } else {
+                    accuracyCircle = L.circle([lat, lng], {
+                        radius: accuracy,
+                        color: '#3388ff',
+                        fillColor: '#3388ff',
+                        fillOpacity: 0.2
+                    }).addTo(map);
+                }
+
+                // Additional geospatial operations
+                const inSafeZone = isInSafeZone({lat, lng});
+                const nearest = findNearestPOI({lat, lng});
+                
+                // Update UI
+                document.getElementById('safeZone').textContent = inSafeZone ? 'Yes' : 'No';
+                document.getElementById('nearestPoi').textContent = 
+                    `${nearest.distance}m to ${nearest.name}`;
+                
+                // Check GNSS usage
+                detectGNSSUsage(position);
+                
+                // Only allow treasure collection in safe zones
+                if (inSafeZone) {
+                    checkTreasureProximity({lat, lng});
+                }
+
+            } catch (error) {
+                console.error('Failed to update location markers:', error);
+            }
+        }
+
+        function handleLocationError(error) {
+            const locationStatus = document.getElementById('locationStatus');
+            if (locationStatus) {
+                locationStatus.textContent = 'Error: ' + error.message;
+                locationStatus.className = 'error-status';
+            }
+            console.error('Geolocation error:', error);
+        }
+
+        // Initialize map first
+        initializeMap();
+
+        // Start location tracking with error handling
+        try {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(updateLocation, handleLocationError, {
+                    enableHighAccuracy: true,
+                    timeout: 5000,
+                    maximumAge: 0
+                });
+            } else {
+                throw new Error('Geolocation is not supported by this browser.');
+            }
+        } catch (error) {
+            handleLocationError(error);
+        }
+    </script>
+</body>
+</html>
